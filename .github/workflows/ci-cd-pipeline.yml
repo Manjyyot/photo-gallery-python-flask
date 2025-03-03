@@ -1,49 +1,81 @@
-name: Flask CI/CD Pipeline
+name: CI/CD Pipeline for Flask App with Docker
 
 on:
   push:
     branches:
       - staging
       - master
-  release:
-    types: [published]
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup SSH Key
+      - name: Print Current Directory and Files
         run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key.pem
-          chmod 600 deploy_key.pem
+          pwd
+          ls -R  # Show full directory structure
 
-      - name: Deploy to Server
-        run: |
-          ssh -o StrictHostKeyChecking=no -i deploy_key.pem ubuntu@${{ secrets.STAGING_SERVER_IP }} << 'EOF'
-            set -e  # Exit on any error
-            
-            echo "Switching to deployment directory..."
-            cd ${{ secrets.DEPLOY_PATH }}
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
-            echo "Pulling latest changes from GitHub..."
-            git fetch origin
-            git reset --hard origin/staging
-            git pull origin staging
+      - name: Set Up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          driver-opts: image=moby/buildkit:v0.11.1-rootless
+          cache-from: type=local,path=/tmp/.buildx-cache
+          cache-to: type=local,path=/tmp/.buildx-cache,mode=max
 
-            echo "Setting up virtual environment..."
-            chmod +x venv/bin/activate
-            source venv/bin/activate
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
-            echo "Installing dependencies..."
-            pip install -r requirements.txt
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v4
+        with:
+          context: .  # Root directory (fixed from previous)
+          file: ./Dockerfile  # Corrected path to Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest, ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:${{ github.sha }}
 
-            echo "Restarting Flask Application..."
-            sudo systemctl restart flask_app || sudo systemctl restart gunicorn
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    environment: production
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            sudo apt update
+            sudo apt install -y docker.io
+            sudo systemctl start docker
+            sudo usermod -aG docker ubuntu
+            sudo reboot
+            docker stop flask-app || true
+            docker rm flask-app || true
 
-            echo "Deployment Successful!"
-          EOF
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest
 
-#change made
+            docker run -d -p 81:5000 --name flask-app ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest
+
+            # ***Crucial Check: Verify Gunicorn is running inside the container***
+            docker exec flask-app ps aux | grep gunicorn || exit 1  # Fail if Gunicorn isn't running
+
+            # ***Crucial Check: Verify Flask app is accessible (inside the container)***
+            docker exec flask-app curl http://localhost:5000 || exit 1 # Fail if curl fails
+
+            echo "✅ Deployment Done!"  # Only prints if checks pass
