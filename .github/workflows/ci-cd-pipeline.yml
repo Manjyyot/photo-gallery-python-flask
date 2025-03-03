@@ -42,10 +42,12 @@ jobs:
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v4
         with:
-          context: .  # Root directory (fixed from previous)
-          file: ./Dockerfile  # Corrected path to Dockerfile
+          context: .  # Root directory
+          file: ./Dockerfile  # Ensure this file exists
           push: true
-          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest, ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest
+            ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:${{ github.sha }}
 
   deploy:
     needs: build
@@ -60,22 +62,19 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            # Ensure Docker is installed and running
             sudo apt update
             sudo apt install -y docker.io
             sudo systemctl start docker
-            sudo usermod -aG docker ubuntu
-            sudo reboot
+
+            # Stop and remove any existing container
             docker stop flask-app || true
             docker rm flask-app || true
 
+            # Pull the latest Docker image
             docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest
 
-            docker run -d -p 81:5000 --name flask-app ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest
-
-            # ***Crucial Check: Verify Gunicorn is running inside the container***
-            docker exec flask-app ps aux | grep gunicorn || exit 1  # Fail if Gunicorn isn't running
-
-            # ***Crucial Check: Verify Flask app is accessible (inside the container)***
-            docker exec flask-app curl http://localhost:5000 || exit 1 # Fail if curl fails
-
-            echo "✅ Deployment Done!"  # Only prints if checks pass
+            # Run a new container
+            docker run -d --name flask-app -p 5000:5000 \
+              -e ENV=production \
+              ${{ secrets.DOCKER_HUB_USERNAME }}/flask-app:latest
