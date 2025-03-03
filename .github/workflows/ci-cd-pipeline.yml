@@ -1,0 +1,28 @@
+name: Flask CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - staging
+      - master
+  release:
+    types: [published]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key.pem
+          chmod 600 deploy_key.pem
+          ssh -o StrictHostKeyChecking=no -i deploy_key.pem ubuntu@${{ secrets.STAGING_SERVER_IP }} << 'EOF'
+            cd ${{ secrets.DEPLOY_PATH }}
+            git pull origin $(git branch --show-current)
+            source venv/bin/activate
+            pip install -r requirements.txt
+            sudo systemctl restart flask_app
+          EOF
