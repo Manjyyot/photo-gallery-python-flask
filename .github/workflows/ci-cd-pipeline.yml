@@ -19,10 +19,31 @@ jobs:
         run: |
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > deploy_key.pem
           chmod 600 deploy_key.pem
+
+      - name: Deploy to Server
+        run: |
           ssh -o StrictHostKeyChecking=no -i deploy_key.pem ubuntu@${{ secrets.STAGING_SERVER_IP }} << 'EOF'
+            set -e  # Exit on any error
+            
+            echo "Switching to deployment directory..."
             cd ${{ secrets.DEPLOY_PATH }}
-            git pull origin $(git branch --show-current)
+
+            echo "Pulling latest changes from GitHub..."
+            git fetch origin
+            git reset --hard origin/staging
+            git pull origin staging
+
+            echo "Setting up virtual environment..."
+            chmod +x venv/bin/activate
             source venv/bin/activate
+
+            echo "Installing dependencies..."
             pip install -r requirements.txt
-            sudo systemctl restart flask_app
+
+            echo "Restarting Flask Application..."
+            sudo systemctl restart flask_app || sudo systemctl restart gunicorn
+
+            echo "Deployment Successful!"
           EOF
+
+#change made
